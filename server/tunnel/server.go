@@ -53,32 +53,43 @@ func NewServerWithTun(clientManager *client.Manager, sharedTun net.Conn) *Server
 
 // gRPC Connect method - main tunnel endpoint
 func (s *Server) Connect(stream proto.TunnelService_ConnectServer) error {
-	// Extract auth metadata
+	log.Println(" New client connection attempt")
+	
+	// Extract metadata
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if !ok {
+		log.Println(" Missing metadata")
 		return status.Errorf(codes.Unauthenticated, "missing metadata")
 	}
+	log.Println(" Metadata extracted")
 
 	clientIDs := md.Get("client-id")
 	secrets := md.Get("client-secret")
 
 	if len(clientIDs) == 0 || len(secrets) == 0 {
+		log.Println("❌ Missing credentials in metadata")
 		return status.Errorf(codes.Unauthenticated, "missing credentials")
 	}
 
 	clientID := clientIDs[0]
 	secret := secrets[0]
+	log.Printf("📋 Client ID: %s", clientID[:8]+"...")
 
 	// Authenticate client
+	log.Println("🔐 Authenticating client...")
 	if !s.clientManager.IsAuthorized(clientID, secret) {
+		log.Println("❌ Authentication failed")
 		return status.Errorf(codes.Unauthenticated, "invalid credentials")
 	}
+	log.Println("✅ Authentication successful")
 
 	// Get client details
 	client, exists := s.clientManager.GetClient(clientID)
 	if !exists {
+		log.Println("❌ Client not found")
 		return status.Errorf(codes.NotFound, "client not found")
 	}
+	log.Printf("✅ Client loaded: %s", client.Name)
 
 	// Generate encryption key
 	key, err := crypto.GenerateKey()
@@ -86,7 +97,7 @@ func (s *Server) Connect(stream proto.TunnelService_ConnectServer) error {
 		return status.Errorf(codes.Internal, "key generation failed")
 	}
 
-	cipher, err := crypto.NewCipher(key)
+	cipher, err := crypto.NewServerCipher(key)
 	if err != nil {
 		return status.Errorf(codes.Internal, "cipher creation failed")
 	}
@@ -119,6 +130,7 @@ func (s *Server) Connect(stream proto.TunnelService_ConnectServer) error {
 	}()
 
 	s.clientManager.SetActive(clientID, true)
+	log.Printf("✅ Session created: %s", sessionID)
 
 	// Send initial handshake with key
 	handshakeFrame := &proto.TunnelFrame{
@@ -136,19 +148,29 @@ func (s *Server) Connect(stream proto.TunnelService_ConnectServer) error {
 }
 
 func (s *Server) handleTunneling(stream proto.TunnelService_ConnectServer, session *Session, client *client.Client) error {
+	log.Println("🔄 Starting packet tunneling...")
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
 	// Goroutine for reading from gRPC stream and writing to TUN
 	go func() {
+		log.Println("📥 Started gRPC→TUN goroutine")
 		defer cancel()
+		packetCount := 0
 		for {
 			frame, err := stream.Recv()
 			if err != nil {
 				if err != io.EOF {
-					log.Printf("Stream recv error: %v", err)
+					log.Printf("❌ Stream recv error: %v", err)
+				} else {
+					log.Println("📪 Client closed stream")
 				}
 				return
+			}
+			
+			packetCount++
+			if packetCount%10 == 0 {
+				log.Printf("📥 Received %d packets from client", packetCount)
 			}
 
 			// Decrypt frame data
@@ -167,9 +189,10 @@ func (s *Server) handleTunneling(stream proto.TunnelService_ConnectServer, sessi
 
 			switch customFrame.Type {
 			case 0: // Data frame
+				log.Printf("📝 Writing %d bytes to TUN", len(customFrame.Data))
 				_, err := session.TunConn.Write(customFrame.Data)
 				if err != nil {
-					log.Printf("TUN write error: %v", err)
+					log.Printf("❌ TUN write error: %v", err)
 					return
 				}
 				session.BytesDown += int64(len(customFrame.Data))

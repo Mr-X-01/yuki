@@ -3,7 +3,6 @@ package crypto
 import (
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -18,13 +17,26 @@ const (
 )
 
 type Cipher struct {
-	aead   cipher.AEAD
-	key    [KeySize]byte
-	sendNonce [NonceSize]byte
-	recvNonce [NonceSize]byte
+	aead       cipher.AEAD
+	key        [KeySize]byte
+	sendNonce  [NonceSize]byte
+	recvNonce  [NonceSize]byte
+	isClient   bool
 }
 
 func NewCipher(key []byte) (*Cipher, error) {
+	return NewCipherWithRole(key, false)
+}
+
+func NewClientCipher(key []byte) (*Cipher, error) {
+	return NewCipherWithRole(key, true)
+}
+
+func NewServerCipher(key []byte) (*Cipher, error) {
+	return NewCipherWithRole(key, false)
+}
+
+func NewCipherWithRole(key []byte, isClient bool) (*Cipher, error) {
 	if len(key) != KeySize {
 		return nil, errors.New("invalid key size")
 	}
@@ -34,15 +46,18 @@ func NewCipher(key []byte) (*Cipher, error) {
 		return nil, err
 	}
 
-	c := &Cipher{aead: aead}
+	c := &Cipher{aead: aead, isClient: isClient}
 	copy(c.key[:], key)
 	
-	// Initialize nonces with random values
-	if _, err := rand.Read(c.sendNonce[:]); err != nil {
-		return nil, err
-	}
-	if _, err := rand.Read(c.recvNonce[:]); err != nil {
-		return nil, err
+	// Initialize nonces based on role to avoid conflicts
+	if isClient {
+		// Client uses even nonces for sending, odd for receiving
+		copy(c.sendNonce[:], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+		copy(c.recvNonce[:], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01})
+	} else {
+		// Server uses odd nonces for sending, even for receiving
+		copy(c.sendNonce[:], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01})
+		copy(c.recvNonce[:], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
 	}
 
 	return c, nil
@@ -57,8 +72,8 @@ func GenerateKey() ([]byte, error) {
 }
 
 func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) {
-	// Increment nonce
-	incrementNonce(c.sendNonce[:])
+	// Increment nonce by 2 to maintain even/odd separation
+	incrementNonceBy(c.sendNonce[:], 2)
 	
 	// Encrypt with XChaCha20-Poly1305
 	ciphertext := c.aead.Seal(nil, c.sendNonce[:], plaintext, nil)
@@ -80,18 +95,11 @@ func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 	nonce := data[:NonceSize]
 	ciphertext := data[NonceSize:]
 	
-	// Verify nonce is sequential (replay protection)
-	expectedNonce := c.recvNonce
-	incrementNonce(expectedNonce[:])
-	
-	if subtle.ConstantTimeCompare(nonce, expectedNonce[:]) != 1 {
-		return nil, errors.New("invalid nonce sequence")
+	// Verify nonce sequence to prevent replay attacks
+	if err := c.verifyAndUpdateReceiveNonce(nonce); err != nil {
+		return nil, fmt.Errorf("invalid nonce sequence: %w", err)
 	}
 	
-	// Update receive nonce
-	copy(c.recvNonce[:], nonce)
-	
-	// Decrypt
 	plaintext, err := c.aead.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
@@ -101,13 +109,61 @@ func (c *Cipher) Decrypt(data []byte) ([]byte, error) {
 }
 
 func incrementNonce(nonce []byte) {
-	// Increment as big-endian counter
-	for i := len(nonce) - 1; i >= 0; i-- {
-		nonce[i]++
-		if nonce[i] != 0 {
-			break
+	incrementNonceBy(nonce, 1)
+}
+
+func incrementNonceBy(nonce []byte, increment int) {
+	carry := increment
+	for i := len(nonce) - 1; i >= 0 && carry > 0; i-- {
+		sum := int(nonce[i]) + carry
+		nonce[i] = byte(sum & 0xFF)
+		carry = sum >> 8
+	}
+}
+
+func (c *Cipher) verifyAndUpdateReceiveNonce(receivedNonce []byte) error {
+	// For initial packets, accept any valid nonce pattern
+	if isZeroNonce(c.recvNonce[:]) {
+		copy(c.recvNonce[:], receivedNonce)
+		return nil
+	}
+	
+	// Check if this is the next expected nonce (increment by 2)
+	expectedNonce := make([]byte, NonceSize)
+	copy(expectedNonce, c.recvNonce[:])
+	incrementNonceBy(expectedNonce, 2)
+	
+	// Allow some tolerance for out-of-order packets
+	for i := 0; i < 10; i++ {
+		if bytesEqual(expectedNonce, receivedNonce) {
+			copy(c.recvNonce[:], receivedNonce)
+			return nil
+		}
+		incrementNonceBy(expectedNonce, 2)
+	}
+	
+	return errors.New("nonce too far ahead or replay detected")
+}
+
+func isZeroNonce(nonce []byte) bool {
+	for _, b := range nonce {
+		if b != 0 {
+			return false
 		}
 	}
+	return true
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Frame encryption for tunnel protocol

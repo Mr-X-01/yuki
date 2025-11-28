@@ -127,7 +127,16 @@ echo iptables-persistent iptables-persistent/autosave_v4 boolean true | $SUDO de
 echo iptables-persistent iptables-persistent/autosave_v6 boolean true | $SUDO debconf-set-selections
 $SUDO netfilter-persistent save
 
-echo "✅ IP forwarding и NAT настроены"
+# Открываем порты в firewall
+echo "🔓 Открываем порты в firewall..."
+$SUDO ufw allow 22/tcp
+$SUDO ufw allow 80/tcp
+$SUDO ufw allow 443/tcp
+$SUDO ufw allow 8443/tcp  # gRPC tunnel service
+$SUDO ufw allow 8444/tcp  # Admin API (optional, только для внутреннего использования)
+$SUDO ufw reload
+
+echo "✅ IP forwarding, NAT и firewall настроены"
 
 # Build server
 echo "🏗️ Building server..."
@@ -152,15 +161,24 @@ echo "🔄 Fixing protobuf versions..."
 go get google.golang.org/protobuf@v1.28.1
 go get google.golang.org/grpc@v1.50.1
 
-# Regenerate proto files to fix protobuf issues
+# Install protoc generators
+echo "📦 Installing protoc generators..."
+export PATH=$PATH:$(go env GOPATH)/bin
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2.0
+
+# Regenerate proto files
 echo "🔄 Regenerating proto files..."
 cd proto
 rm -f *.pb.go
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2.0
 protoc --go_out=. --go_opt=paths=source_relative \
        --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-       tunnel.proto 2>/dev/null || echo "⚠️ Proto regeneration failed, using existing files"
+       tunnel.proto
+if [ ! -f "tunnel.pb.go" ]; then
+    echo "❌ Failed to generate proto files"
+    exit 1
+fi
+echo "✅ Proto files generated"
 cd ..
 
 go mod tidy
@@ -234,9 +252,9 @@ else
     cat > config.json <<JSON
 {
   "server": {
-    "address": "127.0.0.1",
-    "port": 50051,
-    "admin_port": 8443,
+    "address": "0.0.0.0",
+    "port": 8443,
+    "admin_port": 8444,
     "cert_file": "/etc/letsencrypt/live/$DOMAIN_ASCII/fullchain.pem",
     "key_file": "/etc/letsencrypt/live/$DOMAIN_ASCII/privkey.pem",
     "domain": "$DOMAIN_ASCII"
@@ -293,14 +311,14 @@ server {
     
     # gRPC tunnel service (direct proxy to Yuki server)
     location /tunnel.TunnelService/ {
-        grpc_pass grpc://127.0.0.1:50051;
+        grpc_pass grpc://127.0.0.1:8443;
         grpc_set_header Host \$host;
         grpc_set_header X-Real-IP \$remote_addr;
     }
     
     # Admin API
     location /admin/ {
-        proxy_pass http://127.0.0.1:8443;
+        proxy_pass http://127.0.0.1:8444;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -309,7 +327,7 @@ server {
     
     # Legitimate API endpoints for cover
     location / {
-        proxy_pass http://127.0.0.1:8443;
+        proxy_pass http://127.0.0.1:8444;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
