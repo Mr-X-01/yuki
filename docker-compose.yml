@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  yuki-server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: yuki-server
+    restart: unless-stopped
+    ports:
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro
+      - ./server/config.json:/app/config.json:ro
+    environment:
+      - CONFIG_PATH=/app/config.json
+    depends_on:
+      - redis
+    networks:
+      - yuki-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: yuki-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    networks:
+      - yuki-network
+
+  admin-panel:
+    build:
+      context: ./admin-panel
+      dockerfile: Dockerfile
+    container_name: yuki-admin
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - yuki-network
+
+volumes:
+  redis-data:
+  
+networks:
+  yuki-network:
+    driver: bridge
