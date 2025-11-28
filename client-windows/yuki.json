@@ -1,0 +1,23 @@
+{
+  "server_address": "x.vesti-admina.ru:443",
+  "client_id": "41421560-aa8c-4065-a162-a1aa0c0472cc",
+  "client_secret": "521911fb-1479-4745-b8f3-d74ae42a1f2a99912f2b-3a5f-4ed9-a04b-1c591823c89b",
+  "protocol": "grpc",
+  "encryption": "xchacha20-poly1305",
+  "tun_settings": {
+    "name": "yuki",
+    "ip": "10.0.0.2",
+    "netmask": "255.255.255.0",
+    "gateway": "10.0.0.1",
+    "dns": [
+      "8.8.8.8",
+      "8.8.4.4"
+    ]
+  },
+  "advanced": {
+    "keep_alive": 30,
+    "reconnect": true,
+    "auto_start": false,
+    "kill_switch": false
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "server": {
+    "address": "api.example.ru:443",
+    "tls": {
+      "enabled": true,
+      "verify_certificate": true,
+      "server_name": "api.example.ru"
+    },
+    "grpc": {
+      "max_receive_message_size": 4194304,
+      "max_send_message_size": 4194304,
+      "keepalive_time": 30,
+      "keepalive_timeout": 5
+    }
+  },
+  "auth": {
+    "uuid": "12345678-1234-5678-9abc-123456789012",
+    "secret": "your-secret-key-here"
+  },
+  "tunnel": {
+    "interface_name": "YukiVPN",
+    "mtu": 1420,
+    "ip": "10.8.0.2",
+    "netmask": "255.255.255.0",
+    "gateway": "10.8.0.1",
+    "dns": [
+      "8.8.8.8",
+      "8.8.4.4"
+    ]
+  },
+  "crypto": {
+    "algorithm": "xchacha20poly1305",
+    "key_derivation": "pbkdf2"
+  },
+  "client": {
+    "reconnect_interval": 5,
+    "max_reconnect_attempts": 10,
+    "connection_timeout": 30,
+    "read_timeout": 60,
+    "write_timeout": 30,
+    "log_level": "info",
+    "log_file": "yuki-client.log"
+  },
+  "routing": {
+    "route_all_traffic": true,
+    "exclude_routes": [
+      "192.168.0.0/16",
+      "10.0.0.0/8",
+      "172.16.0.0/12"
+    ],
+    "include_routes": [
+      "0.0.0.0/0"
+    ]
+  },
+  "stealth": {
+    "enable_traffic_shaping": true,
+    "packet_delay_ms": 10,
+    "burst_limit": 100,
+    "user_agent": "Yuki/1.0 (Windows NT 10.0; Win64; x64) gRPC/1.58.3"
+  }
+}
